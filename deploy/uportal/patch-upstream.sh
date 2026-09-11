@@ -74,6 +74,21 @@ if 'UPORTAL_DISABLE_COMMERCIAL_BRIDGE' not in text:
     if needle not in text:
         raise SystemExit('UPORTAL entrypoint contract changed: commercial bridge anchor missing')
     text = text.replace(needle, replacement, 1)
+
+# Allow the hosting provider to inject a stable first-user token so the Gmail MCP
+# can use it without scraping deployment logs. If absent, preserve upstream random generation.
+needle = '  first_user_token="$(rand_hex | cut -c1-48)"\n'
+replacement = '  first_user_token="${UPORTAL_FIRST_USER_TOKEN:-$(rand_hex | cut -c1-48)}"\n'
+if 'UPORTAL_FIRST_USER_TOKEN' not in text:
+    if needle not in text:
+        raise SystemExit('UPORTAL entrypoint contract changed: first-user token anchor missing')
+    text = text.replace(needle, replacement, 1)
+
+# Never print credentials into provider logs.
+needle = '  echo "admin token: $ADMIN_SECRET"\n  echo "first user token: $first_user_token"\n'
+replacement = '  echo "UPORTAL bootstrap credentials initialized"\n'
+if needle in text:
+    text = text.replace(needle, replacement, 1)
 entry.write_text(text)
 PY
 
@@ -81,3 +96,8 @@ PY
 grep -q 'GlacierEQ evidence-minimal profile' "$TRACK"
 grep -q "return 'nouid'" "$PORTAL"
 grep -q 'UPORTAL_DISABLE_COMMERCIAL_BRIDGE' "$ENTRY"
+grep -q 'UPORTAL_FIRST_USER_TOKEN' "$ENTRY"
+if grep -q 'echo "first user token:' "$ENTRY"; then
+  echo 'UPORTAL token log redaction failed' >&2
+  exit 1
+fi

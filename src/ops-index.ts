@@ -47,11 +47,15 @@ async function main() {
   const auth = await loadOAuthClient();
   const gmail = google.gmail({ version: 'v1', auth });
 
-  const server = new Server({
-    name: 'glaciereq-gmail-ops',
-    version: '1.0.0',
-    capabilities: { tools: {} },
-  });
+  const server = new Server(
+    {
+      name: 'glaciereq-gmail-ops',
+      version: '1.0.0',
+    },
+    {
+      capabilities: { tools: {} },
+    },
+  );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [

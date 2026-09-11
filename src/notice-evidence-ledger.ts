@@ -16,6 +16,20 @@ export interface NoticeEvidenceLedgerRecord {
 
 const DEFAULT_PATH = path.join(os.homedir(), '.gmail-mcp', 'ops', 'notice-evidence-ledger.jsonl');
 
+function durableJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function durableNoticeRecord(noticeRecord: NoticeEvidenceRecord): NoticeEvidenceRecord {
+  const durable = durableJson(noticeRecord);
+  const { recordDigestSha256: _oldDigest, ...unsigned } = durable;
+  const digest = sha256Canonical(unsigned);
+  durable.recordDigestSha256 = digest;
+  // Keep the caller-visible record aligned with the exact JSON that is persisted.
+  noticeRecord.recordDigestSha256 = digest;
+  return durable;
+}
+
 export function readNoticeEvidenceLedger(filePath = DEFAULT_PATH): NoticeEvidenceLedgerRecord[] {
   if (!fs.existsSync(filePath)) return [];
   const text = fs.readFileSync(filePath, 'utf8').trim();
@@ -27,6 +41,10 @@ export function readNoticeEvidenceLedger(filePath = DEFAULT_PATH): NoticeEvidenc
     if (record.previousRecordSha256 !== previous) throw new Error(`Notice ledger chain discontinuity at sequence ${record.sequence}`);
     if (record.noticeRecordDigestSha256 !== record.noticeRecord.recordDigestSha256) {
       throw new Error(`Notice record digest mismatch at sequence ${record.sequence}`);
+    }
+    const { recordDigestSha256, ...noticeUnsigned } = record.noticeRecord;
+    if (sha256Canonical(noticeUnsigned) !== recordDigestSha256) {
+      throw new Error(`Persisted Notice Evidence content hash mismatch at sequence ${record.sequence}`);
     }
     const { recordSha256, ...unsigned } = record;
     const computed = sha256Canonical(unsigned);
@@ -42,13 +60,14 @@ export function appendNoticeEvidenceRecord(
 ): NoticeEvidenceLedgerRecord {
   const records = readNoticeEvidenceLedger(filePath);
   const previous = records.length ? records[records.length - 1].recordSha256 : 'GENESIS';
+  const durableRecord = durableNoticeRecord(noticeRecord);
   const unsigned = {
     schema: 'glaciereq.notice-evidence-ledger.v1' as const,
     sequence: records.length + 1,
     recordedAt: new Date().toISOString(),
-    threadId: noticeRecord.threadId,
-    noticeRecordDigestSha256: noticeRecord.recordDigestSha256,
-    noticeRecord,
+    threadId: durableRecord.threadId,
+    noticeRecordDigestSha256: durableRecord.recordDigestSha256,
+    noticeRecord: durableRecord,
     previousRecordSha256: previous,
   };
   const record: NoticeEvidenceLedgerRecord = { ...unsigned, recordSha256: sha256Canonical(unsigned) };

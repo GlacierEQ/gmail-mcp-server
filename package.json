@@ -1,7 +1,7 @@
 {
   "name": "@gongrzhe/server-gmail-autoauth-mcp",
   "version": "1.1.11",
-  "description": "Gmail MCP server with auto authentication support",
+  "description": "Gmail MCP server with GlacierEQ operational reconciliation extensions",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -10,11 +10,12 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test dist/evals/reconcile-email-state.test.js",
     "start": "node dist/index.js",
     "start:ops": "node dist/ops-index.js",
     "auth": "node dist/index.js auth",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm test"
   },
   "files": [
     "dist",
@@ -29,7 +30,9 @@
     "model-context-protocol",
     "google-gmail",
     "claude",
-    "auto-auth"
+    "auto-auth",
+    "email-operations",
+    "response-reconciliation"
   ],
   "author": "gongrzhe",
   "license": "ISC",
@@ -45,7 +48,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",

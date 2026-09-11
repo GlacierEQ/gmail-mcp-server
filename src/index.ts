@@ -275,40 +275,37 @@ const CreateFilterSchema = z.object({
         negatedQuery: z.string().optional().describe("Text that must NOT be present"),
         hasAttachment: z.boolean().optional().describe("Whether to match emails with attachments"),
         excludeChats: z.boolean().optional().describe("Whether to exclude chat messages"),
-        size: z.number().optional().describe("Email size in bytes"),
-        sizeComparison: z.enum(['unspecified', 'smaller', 'larger']).optional().describe("Size comparison operator")
-    }).describe("Criteria for matching emails"),
+        size: z.number().optional().describe("Size of email in bytes"),
+        sizeComparison: z.enum(['larger', 'smaller']).optional().describe("Size comparison (larger or smaller)")
+    }),
     action: z.object({
-        addLabelIds: z.array(z.string()).optional().describe("Label IDs to add to matching emails"),
-        removeLabelIds: z.array(z.string()).optional().describe("Label IDs to remove from matching emails"),
-        forward: z.string().optional().describe("Email address to forward matching emails to")
-    }).describe("Actions to perform on matching emails")
-}).describe("Creates a new Gmail filter");
+        addLabelIds: z.array(z.string()).optional().describe("Labels to add to matching emails"),
+        removeLabelIds: z.array(z.string()).optional().describe("Labels to remove from matching emails"),
+        forward: z.string().optional().describe("Email address to forward to")
+    })
+});
 
-const ListFiltersSchema = z.object({}).describe("Retrieves all Gmail filters");
-
+const ListFiltersSchema = z.object({});
 const GetFilterSchema = z.object({
-    filterId: z.string().describe("ID of the filter to retrieve")
-}).describe("Gets details of a specific Gmail filter");
-
+    filterId: z.string().describe("Filter ID to retrieve")
+});
 const DeleteFilterSchema = z.object({
-    filterId: z.string().describe("ID of the filter to delete")
-}).describe("Deletes a Gmail filter");
-
+    filterId: z.string().describe("Filter ID to delete")
+});
 const CreateFilterFromTemplateSchema = z.object({
-    template: z.enum(['fromSender', 'withSubject', 'withAttachments', 'largeEmails', 'containingText', 'mailingList']).describe("Pre-defined filter template to use"),
+    template: z.enum(['fromSender', 'withSubject', 'withAttachments', 'largeEmails', 'containingText', 'mailingList']),
     parameters: z.object({
-        senderEmail: z.string().optional().describe("Sender email (for fromSender template)"),
-        subjectText: z.string().optional().describe("Subject text (for withSubject template)"),
-        searchText: z.string().optional().describe("Text to search for (for containingText template)"),
-        listIdentifier: z.string().optional().describe("Mailing list identifier (for mailingList template)"),
-        sizeInBytes: z.number().optional().describe("Size threshold in bytes (for largeEmails template)"),
-        labelIds: z.array(z.string()).optional().describe("Label IDs to apply"),
-        archive: z.boolean().optional().describe("Whether to archive (skip inbox)"),
-        markAsRead: z.boolean().optional().describe("Whether to mark as read"),
-        markImportant: z.boolean().optional().describe("Whether to mark as important")
-    }).describe("Template-specific parameters")
-}).describe("Creates a filter using a pre-defined template");
+        senderEmail: z.string().optional(),
+        subjectText: z.string().optional(),
+        searchText: z.string().optional(),
+        listIdentifier: z.string().optional(),
+        sizeInBytes: z.number().optional(),
+        labelIds: z.array(z.string()).optional(),
+        archive: z.boolean().optional(),
+        markAsRead: z.boolean().optional(),
+        markImportant: z.boolean().optional()
+    })
+});
 
 const DownloadAttachmentSchema = z.object({
     messageId: z.string().describe("ID of the email message containing the attachment"),
@@ -332,13 +329,17 @@ async function main() {
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     // Server implementation
-    const server = new Server({
-        name: "gmail",
-        version: "1.0.0",
-        capabilities: {
-            tools: {},
+    const server = new Server(
+        {
+            name: "gmail",
+            version: "1.0.0",
         },
-    });
+        {
+            capabilities: {
+                tools: {},
+            },
+        },
+    );
 
     // Tool handlers
     server.setRequestHandler(ListToolsRequestSchema, async () => ({

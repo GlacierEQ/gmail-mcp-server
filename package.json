@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node dist/evals/reconcile-email-state.test.js && node dist/evals/email-operations-pipeline.test.js",
+    "test": "npm run build && node dist/evals/reconcile-email-state.test.js && node dist/evals/email-operations-pipeline.test.js && node dist/evals/notice-evidence.test.js",
     "start": "node dist/index.js",
     "start:ops": "node dist/ops-index.js",
     "auth": "node dist/index.js auth",
@@ -32,7 +32,10 @@
     "claude",
     "auto-auth",
     "email-operations",
-    "response-reconciliation"
+    "response-reconciliation",
+    "notice-evidence",
+    "email-tracking",
+    "forensics"
   ],
   "author": "gongrzhe",
   "license": "ISC",

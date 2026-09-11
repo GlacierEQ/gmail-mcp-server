@@ -81,11 +81,15 @@ export function appendTrackedSendRecord(
 ): TrackedSendLedgerRecord {
   const records = readTrackedSendLedger(filePath);
   const previous = records.length ? records[records.length - 1].recordSha256 : 'GENESIS';
+  // Hash exactly the JSON shape that will be persisted. Optional properties with
+  // `undefined` are omitted by JSON.stringify; hashing the in-memory shape would
+  // otherwise produce a digest that cannot survive a write/read round trip.
+  const durableInput = JSON.parse(JSON.stringify(input)) as TrackedSendLedgerInput;
   const unsigned = {
     schema: 'glaciereq.tracked-send-ledger.v1' as const,
     sequence: records.length + 1,
     recordedAt: new Date().toISOString(),
-    ...input,
+    ...durableInput,
     previousRecordSha256: previous,
   };
   const record: TrackedSendLedgerRecord = { ...unsigned, recordSha256: sha256Canonical(unsigned) };

@@ -142,7 +142,7 @@ export async function sendTrackedNotices(
 
     if (trackingMode === 'CONSENTED_FIRST_PARTY_PIXEL') {
       try {
-        publication = await publishPixel(
+        const published = await publishPixel(
           deps.uportalConfig || uportalConfigFromEnv(),
           {
             publicationId: `notice-${sendId}`,
@@ -151,7 +151,8 @@ export async function sendTrackedNotices(
             recipients: [recipient],
           },
         );
-        binding = uportalBinding(publication);
+        publication = published;
+        binding = uportalBinding(published);
         appendRecord({
           sendId,
           recipient,

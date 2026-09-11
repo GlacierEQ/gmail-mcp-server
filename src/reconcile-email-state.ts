@@ -122,9 +122,10 @@ export async function reconcileEmailObligation(
   if (inbound.threadId) {
     const thread = await gmail.users.threads.get({ userId: 'me', id: inbound.threadId, format: 'full' });
     const messages = (thread.data.messages || []).sort((a, b) => parseInternalDate(a) - parseInternalDate(b));
-    const priorSent = messages.filter(m =>
+    const priorSentMessages = messages.filter(m =>
       (m.labelIds || []).includes('SENT') && parseInternalDate(m) < receivedMs
-    ).at(-1);
+    );
+    const priorSent = priorSentMessages.length > 0 ? priorSentMessages[priorSentMessages.length - 1] : undefined;
     if (priorSent?.id) {
       const priorMs = parseInternalDate(priorSent);
       result.priorOutboundMessageId = priorSent.id;

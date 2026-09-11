@@ -24,7 +24,28 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: TypeScript build
-        run: npm run build
-      - name: Reconciliation tests
-        run: node --test dist/evals/reconcile-email-state.test.js
+      - name: Full email operations test suite
+        run: npm test
+
+  uportal-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate hardening patch syntax
+        run: sh -n deploy/uportal/patch-upstream.sh
+      - name: Build pinned evidentiary UPORTAL image
+        run: >-
+          docker build
+          --file deploy/uportal/Dockerfile
+          --build-arg UPORTAL_DOMAIN=tracker.example.test
+          --build-arg UPORTAL_BASE_URL=https://tracker.example.test
+          --tag glaciereq-uportal:ci
+          deploy/uportal
+      - name: Verify image hardening and runtime contract
+        run: >-
+          docker run --rm --entrypoint /bin/bash glaciereq-uportal:ci -lc
+          "grep -q 'GlacierEQ evidence-minimal profile' /usr/local/bin/uportal-track-event.sh &&
+          grep -q \"return 'nouid'\" /opt/uportal/runtime/njs/portal.js &&
+          grep -q 'UPORTAL_FIRST_USER_TOKEN' /usr/local/bin/uportal-container-entrypoint &&
+          ! grep -q 'echo \"first user token:' /usr/local/bin/uportal-container-entrypoint"

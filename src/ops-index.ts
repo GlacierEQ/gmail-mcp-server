@@ -16,6 +16,7 @@ import { evaluateTrackingMode } from './lawful-tracking-policy.js';
 import { appendTrackingSnapshot, latestTrackedThreads, trackingLedgerPath } from './email-tracking-ledger.js';
 import { buildNoticeEvidenceRecord, normalizeUportalEvent } from './notice-evidence.js';
 import { appendNoticeEvidenceRecord, latestNoticeEvidenceRecords, noticeEvidenceLedgerPath } from './notice-evidence-ledger.js';
+import { fetchUportalActivity, uportalConfigFromEnv } from './uportal-client.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.gmail-mcp');
 const OAUTH_PATH = process.env.GMAIL_OAUTH_PATH || path.join(CONFIG_DIR, 'gcp-oauth.keys.json');
@@ -67,12 +68,33 @@ const DutySpecSchema = z.object({
   explicitSatisfiedAt: z.string().optional(),
 });
 
+const UportalQueryFields = {
+  uportalPublicationId: z.string().min(1).optional().describe('UPORTAL publication ID linked to this email/notice. When supplied, activity is pulled live using UPORTAL_BASE_URL and UPORTAL_USER_TOKEN.'),
+  uportalToken: z.string().min(1).optional().describe('Optional UPORTAL per-recipient/publication token filter.'),
+  uportalEvent: z.string().min(1).optional().describe('Optional comma-separated UPORTAL event filter.'),
+  uportalFrom: z.string().optional().describe('Optional UPORTAL activity lower timestamp bound.'),
+  uportalTo: z.string().optional().describe('Optional UPORTAL activity upper timestamp bound.'),
+  uportalLimit: z.number().int().min(1).max(500).optional().default(200),
+  uportalMaxPages: z.number().int().min(1).max(100).optional().default(10),
+};
+
 const CompileNoticeEvidenceSchema = z.object({
   threadId: z.string().describe('Gmail thread containing the notice or request.'),
   followUpAfterHours: z.number().positive().max(24 * 365).optional().default(72),
-  uportalEvents: z.array(z.record(z.unknown())).optional().default([]).describe('Raw UPORTAL event objects. Sensitive network/device telemetry is not retained in the normalized evidence record.'),
+  uportalEvents: z.array(z.record(z.unknown())).optional().default([]).describe('Optional raw UPORTAL event objects. Live tracker events can instead be fetched by providing uportalPublicationId.'),
+  ...UportalQueryFields,
   duty: DutySpecSchema.optional().describe('Optional externally sourced duty/deadline specification. The engine evaluates it but does not independently establish legal applicability.'),
   persist: z.boolean().optional().default(true).describe('Append the compiled notice evidence record to the tamper-evident notice ledger.'),
+});
+
+const FetchUportalActivitySchema = z.object({
+  publicationId: z.string().min(1),
+  token: z.string().min(1).optional(),
+  event: z.string().min(1).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  limit: z.number().int().min(1).max(500).optional().default(200),
+  maxPages: z.number().int().min(1).max(100).optional().default(10),
 });
 
 const NormalizeUportalEventSchema = z.object({
@@ -98,7 +120,7 @@ async function main() {
   const gmail = google.gmail({ version: 'v1', auth });
 
   const server = new Server(
-    { name: 'glaciereq-gmail-ops', version: '1.3.0' },
+    { name: 'glaciereq-gmail-ops', version: '1.4.0' },
     { capabilities: { tools: {} } },
   );
 
@@ -121,8 +143,13 @@ async function main() {
       },
       {
         name: 'compile_notice_evidence',
-        description: 'Combine a live Gmail thread, normalized UPORTAL access events, and an optional sourced duty/deadline into a provenance-bound Notice Evidence Record. This distinguishes transmission, delivery exceptions, engagement, acknowledgement, human-reading inference, formal service, and duty status instead of collapsing them.',
+        description: 'Combine a live Gmail thread, live or supplied UPORTAL access events, and an optional sourced duty/deadline into a provenance-bound Notice Evidence Record. This distinguishes transmission, delivery exceptions, engagement, acknowledgement, human-reading inference, formal service, and duty status instead of collapsing them.',
         inputSchema: zodToJsonSchema(CompileNoticeEvidenceSchema),
+      },
+      {
+        name: 'fetch_uportal_activity_evidence',
+        description: 'Pull UPORTAL activity directly from the configured self-hosted tracker and return only normalized evidence observations. Authentication is read from UPORTAL_BASE_URL, UPORTAL_USER_TOKEN, and optional UPORTAL_AUTH_HEADER; secrets are never returned.',
+        inputSchema: zodToJsonSchema(FetchUportalActivitySchema),
       },
       {
         name: 'normalize_uportal_event',
@@ -176,13 +203,73 @@ async function main() {
         }
         case 'compile_notice_evidence': {
           const input = CompileNoticeEvidenceSchema.parse(request.params.arguments);
+          if (input.uportalToken && !input.uportalPublicationId) {
+            throw new Error('uportalToken requires uportalPublicationId so engagement evidence is bound to an explicit publication.');
+          }
           const snapshot = await trackEmailThread(gmail, input.threadId, input.followUpAfterHours);
-          const observations = input.uportalEvents.map(event => normalizeUportalEvent(event));
+          const rawEvents: Record<string, unknown>[] = [...input.uportalEvents];
+          let liveActivity: { pagesFetched: number; totalReported: number; fetchedItems: number; publicationId?: string; token?: string } | null = null;
+
+          if (input.uportalPublicationId) {
+            const activity = await fetchUportalActivity(
+              uportalConfigFromEnv(),
+              {
+                publicationId: input.uportalPublicationId,
+                token: input.uportalToken,
+                event: input.uportalEvent,
+                from: input.uportalFrom,
+                to: input.uportalTo,
+                limit: input.uportalLimit,
+                maxPages: input.uportalMaxPages,
+                sortOrder: 'asc',
+              },
+            );
+            rawEvents.push(...activity.items);
+            liveActivity = {
+              pagesFetched: activity.pagesFetched,
+              totalReported: activity.totalReported,
+              fetchedItems: activity.items.length,
+              publicationId: activity.publicationId,
+              token: activity.token,
+            };
+          }
+
+          const observations = rawEvents.map(event => normalizeUportalEvent(event));
           const noticeRecord = buildNoticeEvidenceRecord(snapshot, observations, input.duty);
           const persisted = input.persist ? appendNoticeEvidenceRecord(noticeRecord) : null;
           const result = {
             noticeRecord,
+            engagementSource: {
+              suppliedRawEvents: input.uportalEvents.length,
+              liveActivity,
+              normalizedObservations: observations.length,
+            },
             persistence: persisted ? { ledgerPath: noticeEvidenceLedgerPath(), ledgerRecord: persisted } : null,
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'fetch_uportal_activity_evidence': {
+          const input = FetchUportalActivitySchema.parse(request.params.arguments);
+          const activity = await fetchUportalActivity(
+            uportalConfigFromEnv(),
+            {
+              publicationId: input.publicationId,
+              token: input.token,
+              event: input.event,
+              from: input.from,
+              to: input.to,
+              limit: input.limit,
+              maxPages: input.maxPages,
+              sortOrder: 'asc',
+            },
+          );
+          const result = {
+            source: activity.source,
+            publicationId: activity.publicationId,
+            token: activity.token,
+            pagesFetched: activity.pagesFetched,
+            totalReported: activity.totalReported,
+            observations: activity.items.map(event => normalizeUportalEvent(event)),
           };
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }

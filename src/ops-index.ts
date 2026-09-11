@@ -14,6 +14,8 @@ import { reconcileEmailObligation } from './reconcile-email-state.js';
 import { scanEmailOperations, trackEmailThread } from './email-operations-pipeline.js';
 import { evaluateTrackingMode } from './lawful-tracking-policy.js';
 import { appendTrackingSnapshot, latestTrackedThreads, trackingLedgerPath } from './email-tracking-ledger.js';
+import { buildNoticeEvidenceRecord, normalizeUportalEvent } from './notice-evidence.js';
+import { appendNoticeEvidenceRecord, latestNoticeEvidenceRecords, noticeEvidenceLedgerPath } from './notice-evidence-ledger.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.gmail-mcp');
 const OAUTH_PATH = process.env.GMAIL_OAUTH_PATH || path.join(CONFIG_DIR, 'gcp-oauth.keys.json');
@@ -45,7 +47,40 @@ const TrackingPolicySchema = z.object({
   recipientNoticeOrConsent: z.boolean().optional().default(false),
 });
 
+const DutySpecSchema = z.object({
+  id: z.string().min(1),
+  authority: z.object({
+    label: z.string().min(1),
+    citation: z.string().min(1),
+    jurisdiction: z.string().optional(),
+    sourceUrl: z.string().url().optional(),
+  }),
+  requiredAction: z.string().min(1),
+  trigger: z.enum(['SENT', 'ACKNOWLEDGED', 'ENGAGEMENT', 'EXPLICIT']),
+  explicitTriggerAt: z.string().optional(),
+  deadline: z.object({
+    unit: z.enum(['HOURS', 'CALENDAR_DAYS', 'BUSINESS_DAYS']),
+    value: z.number().nonnegative(),
+    holidays: z.array(z.string()).optional(),
+  }),
+  satisfaction: z.enum(['ANY_INBOUND', 'ACKNOWLEDGEMENT', 'SUBSTANTIVE_RESPONSE', 'RECORDS_EVIDENCE_RECEIVED', 'EXPLICIT']),
+  explicitSatisfiedAt: z.string().optional(),
+});
+
+const CompileNoticeEvidenceSchema = z.object({
+  threadId: z.string().describe('Gmail thread containing the notice or request.'),
+  followUpAfterHours: z.number().positive().max(24 * 365).optional().default(72),
+  uportalEvents: z.array(z.record(z.unknown())).optional().default([]).describe('Raw UPORTAL event objects. Sensitive network/device telemetry is not retained in the normalized evidence record.'),
+  duty: DutySpecSchema.optional().describe('Optional externally sourced duty/deadline specification. The engine evaluates it but does not independently establish legal applicability.'),
+  persist: z.boolean().optional().default(true).describe('Append the compiled notice evidence record to the tamper-evident notice ledger.'),
+});
+
+const NormalizeUportalEventSchema = z.object({
+  event: z.record(z.unknown()),
+});
+
 const ListTrackedThreadsSchema = z.object({});
+const ListNoticeEvidenceSchema = z.object({});
 
 async function loadOAuthClient(): Promise<OAuth2Client> {
   if (!fs.existsSync(OAUTH_PATH)) throw new Error(`OAuth keys not found at ${OAUTH_PATH}; authenticate with the primary gmail-mcp server first.`);
@@ -63,7 +98,7 @@ async function main() {
   const gmail = google.gmail({ version: 'v1', auth });
 
   const server = new Server(
-    { name: 'glaciereq-gmail-ops', version: '1.2.0' },
+    { name: 'glaciereq-gmail-ops', version: '1.3.0' },
     { capabilities: { tools: {} } },
   );
 
@@ -85,9 +120,24 @@ async function main() {
         inputSchema: zodToJsonSchema(ScanEmailOperationsSchema),
       },
       {
+        name: 'compile_notice_evidence',
+        description: 'Combine a live Gmail thread, normalized UPORTAL access events, and an optional sourced duty/deadline into a provenance-bound Notice Evidence Record. This distinguishes transmission, delivery exceptions, engagement, acknowledgement, human-reading inference, formal service, and duty status instead of collapsing them.',
+        inputSchema: zodToJsonSchema(CompileNoticeEvidenceSchema),
+      },
+      {
+        name: 'normalize_uportal_event',
+        description: 'Normalize one raw UPORTAL event into evidence-minimal engagement telemetry. Retains publication/event/time/recipient provenance, hashes the complete input, and discards network identifiers and device-fingerprinting fields from the normalized record.',
+        inputSchema: zodToJsonSchema(NormalizeUportalEventSchema),
+      },
+      {
         name: 'list_tracked_email_threads',
         description: 'Read and verify the append-only email tracking ledger, returning the latest persisted state for every tracked Gmail thread.',
         inputSchema: zodToJsonSchema(ListTrackedThreadsSchema),
+      },
+      {
+        name: 'list_notice_evidence_records',
+        description: 'Read and verify the append-only Notice Evidence ledger, returning the latest compiled evidence record for every tracked Gmail thread.',
+        inputSchema: zodToJsonSchema(ListNoticeEvidenceSchema),
       },
       {
         name: 'evaluate_email_tracking_policy',
@@ -124,9 +174,31 @@ async function main() {
           if (input.openOnly) result = result.filter(item => item.openAction !== null || item.followUpDue);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
+        case 'compile_notice_evidence': {
+          const input = CompileNoticeEvidenceSchema.parse(request.params.arguments);
+          const snapshot = await trackEmailThread(gmail, input.threadId, input.followUpAfterHours);
+          const observations = input.uportalEvents.map(event => normalizeUportalEvent(event));
+          const noticeRecord = buildNoticeEvidenceRecord(snapshot, observations, input.duty);
+          const persisted = input.persist ? appendNoticeEvidenceRecord(noticeRecord) : null;
+          const result = {
+            noticeRecord,
+            persistence: persisted ? { ledgerPath: noticeEvidenceLedgerPath(), ledgerRecord: persisted } : null,
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'normalize_uportal_event': {
+          const input = NormalizeUportalEventSchema.parse(request.params.arguments);
+          const result = normalizeUportalEvent(input.event);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
         case 'list_tracked_email_threads': {
           ListTrackedThreadsSchema.parse(request.params.arguments || {});
           const result = { ledgerPath: trackingLedgerPath(), trackedThreads: latestTrackedThreads() };
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'list_notice_evidence_records': {
+          ListNoticeEvidenceSchema.parse(request.params.arguments || {});
+          const result = { ledgerPath: noticeEvidenceLedgerPath(), noticeRecords: latestNoticeEvidenceRecords() };
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
         case 'evaluate_email_tracking_policy': {

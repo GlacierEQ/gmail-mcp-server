@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fetchUportalActivity } from '../uportal-client.js';
+import { fetchUportalActivity, publishUportalPixel } from '../uportal-client.js';
 
 async function main() {
   {
@@ -47,6 +47,58 @@ async function main() {
     assert.equal(firstBody.publication_id, 'pub-1');
     assert.equal(firstBody.token, 'recipient-1');
     assert.equal(firstBody.sort_order, 'asc');
+    assert.equal(String(calls[0].init.body).includes('secret-token'), false);
+  }
+
+  {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const mockFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init || {} });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          message: [{
+            type: 'pixel',
+            status: 'active',
+            publication_id: 'notice-send1',
+            token: 'recipient-token',
+            short_id: 'AbC123xYz',
+            short_url: 'https://tracker.example.test/s/AbC123xYz',
+            subj: 'Evidence notice',
+            mails: ['records@example.test'],
+            html: '<img src="https://tracker.example.test/s/AbC123xYz" width="1" height="1" alt="" />',
+          }],
+        }),
+      } as any;
+    }) as typeof fetch;
+
+    const result = await publishUportalPixel(
+      {
+        baseUrl: 'https://tracker.example.test/',
+        userToken: 'secret-token',
+        clientUid: 'glaciereq-gmail-ops',
+        clientType: 'web',
+      },
+      {
+        publicationId: 'notice-send1',
+        token: 'recipient-token',
+        subject: 'Evidence notice',
+        recipients: ['records@example.test'],
+      },
+      mockFetch,
+    );
+
+    assert.equal(result.publicationId, 'notice-send1');
+    assert.equal(result.token, 'recipient-token');
+    assert.equal(result.shortId, 'AbC123xYz');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://tracker.example.test/api/admin/publish/pixel');
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers['X-User-Token'], 'secret-token');
+    assert.equal(headers['X-UPortal-Client-Uid'], 'glaciereq-gmail-ops');
+    assert.equal(headers['X-UPortal-Client-Type'], 'web');
     assert.equal(String(calls[0].init.body).includes('secret-token'), false);
   }
 

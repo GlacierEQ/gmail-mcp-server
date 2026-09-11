@@ -2,6 +2,8 @@ export interface UportalClientConfig {
   baseUrl: string;
   userToken: string;
   authHeader?: string;
+  clientUid?: string;
+  clientType?: 'web' | 'plugin';
 }
 
 export interface UportalActivityFilters {
@@ -67,10 +69,16 @@ function requiredEnv(name: string): string {
 }
 
 export function uportalConfigFromEnv(): UportalClientConfig {
+  const configuredType = process.env.UPORTAL_CLIENT_TYPE?.trim().toLowerCase();
+  if (configuredType && !['web', 'plugin'].includes(configuredType)) {
+    throw new Error('UPORTAL_CLIENT_TYPE must be web or plugin');
+  }
   return {
     baseUrl: requiredEnv('UPORTAL_BASE_URL'),
     userToken: requiredEnv('UPORTAL_USER_TOKEN'),
     authHeader: process.env.UPORTAL_AUTH_HEADER?.trim() || 'X-User-Token',
+    clientUid: process.env.UPORTAL_CLIENT_UID?.trim() || 'glaciereq-gmail-ops',
+    clientType: (configuredType as 'web' | 'plugin' | undefined) || 'web',
   };
 }
 
@@ -88,6 +96,17 @@ function validatedAuthHeader(config: UportalClientConfig): string {
   if (!authHeader || /[\r\n]/.test(authHeader)) throw new Error('Invalid UPORTAL auth header');
   if (!config.userToken?.trim()) throw new Error('UPORTAL user token is required');
   return authHeader;
+}
+
+function publishClientHeaders(config: UportalClientConfig): Record<string, string> {
+  const clientUid = (config.clientUid || 'glaciereq-gmail-ops').trim();
+  const clientType = config.clientType || 'web';
+  if (!clientUid || /[\r\n]/.test(clientUid)) throw new Error('Invalid UPORTAL client UID');
+  if (!['web', 'plugin'].includes(clientType)) throw new Error('Invalid UPORTAL client type');
+  return {
+    'X-UPortal-Client-Uid': clientUid,
+    'X-UPortal-Client-Type': clientType,
+  };
 }
 
 function positiveInt(value: number | undefined, fallback: number, max: number): number {
@@ -199,6 +218,7 @@ export async function publishUportalPixel(
 ): Promise<UportalPixelPublication> {
   const baseUrl = normalizedBaseUrl(config.baseUrl);
   const authHeader = validatedAuthHeader(config);
+  const clientHeaders = publishClientHeaders(config);
   if (!input.publicationId.trim()) throw new Error('UPORTAL publicationId is required');
   if (!input.token.trim()) throw new Error('UPORTAL token is required');
   if (!input.subject.trim()) throw new Error('UPORTAL subject is required');
@@ -228,6 +248,7 @@ export async function publishUportalPixel(
     headers: {
       'Content-Type': 'application/json',
       [authHeader]: config.userToken,
+      ...clientHeaders,
     },
     body: JSON.stringify(body),
   });

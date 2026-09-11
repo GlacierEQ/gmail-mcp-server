@@ -17,6 +17,12 @@ import { appendTrackingSnapshot, latestTrackedThreads, trackingLedgerPath } from
 import { buildNoticeEvidenceRecord, normalizeUportalEvent } from './notice-evidence.js';
 import { appendNoticeEvidenceRecord, latestNoticeEvidenceRecords, noticeEvidenceLedgerPath } from './notice-evidence-ledger.js';
 import { fetchUportalActivity, uportalConfigFromEnv } from './uportal-client.js';
+import { sendTrackedNotices } from './tracked-notice-send.js';
+import {
+  latestTrackedSendRecords,
+  successfulTrackedSendsForThread,
+  trackedSendLedgerPath,
+} from './tracked-send-ledger.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.gmail-mcp');
 const OAUTH_PATH = process.env.GMAIL_OAUTH_PATH || path.join(CONFIG_DIR, 'gcp-oauth.keys.json');
@@ -69,7 +75,7 @@ const DutySpecSchema = z.object({
 });
 
 const UportalQueryFields = {
-  uportalPublicationId: z.string().min(1).optional().describe('UPORTAL publication ID linked to this email/notice. When supplied, activity is pulled live using UPORTAL_BASE_URL and UPORTAL_USER_TOKEN.'),
+  uportalPublicationId: z.string().min(1).optional().describe('Optional explicit UPORTAL publication ID. If omitted, compile_notice_evidence discovers recipient-bound tracker bindings from the tracked-send ledger for this Gmail thread.'),
   uportalToken: z.string().min(1).optional().describe('Optional UPORTAL per-recipient/publication token filter.'),
   uportalEvent: z.string().min(1).optional().describe('Optional comma-separated UPORTAL event filter.'),
   uportalFrom: z.string().optional().describe('Optional UPORTAL activity lower timestamp bound.'),
@@ -81,7 +87,7 @@ const UportalQueryFields = {
 const CompileNoticeEvidenceSchema = z.object({
   threadId: z.string().describe('Gmail thread containing the notice or request.'),
   followUpAfterHours: z.number().positive().max(24 * 365).optional().default(72),
-  uportalEvents: z.array(z.record(z.unknown())).optional().default([]).describe('Optional raw UPORTAL event objects. Live tracker events can instead be fetched by providing uportalPublicationId.'),
+  uportalEvents: z.array(z.record(z.unknown())).optional().default([]).describe('Optional raw UPORTAL event objects. Live tracker events are normally auto-discovered from tracked-send bindings.'),
   ...UportalQueryFields,
   duty: DutySpecSchema.optional().describe('Optional externally sourced duty/deadline specification. The engine evaluates it but does not independently establish legal applicability.'),
   persist: z.boolean().optional().default(true).describe('Append the compiled notice evidence record to the tamper-evident notice ledger.'),
@@ -97,12 +103,25 @@ const FetchUportalActivitySchema = z.object({
   maxPages: z.number().int().min(1).max(100).optional().default(10),
 });
 
+const TrackedNoticeSendSchema = z.object({
+  recipients: z.array(z.string().email()).min(1).max(50).describe('Recipients. Each receives a separate provider message so evidence remains recipient-specific.'),
+  subject: z.string().min(1),
+  body: z.string(),
+  htmlBody: z.string().optional(),
+  attachments: z.array(z.string().min(1)).optional().default([]),
+  trackingMode: z.enum(['PROVIDER_STATE', 'EXPLICIT_RECEIPT_REQUEST', 'CONSENTED_FIRST_PARTY_PIXEL']).optional().default('PROVIDER_STATE'),
+  recipientNoticeOrConsent: z.boolean().optional().default(false),
+  threadId: z.string().min(1).optional().describe('Optional Gmail thread for a tracked reply. Threaded tracked sends require exactly one recipient.'),
+  inReplyTo: z.string().min(1).optional().describe('Optional RFC Message-ID for reply headers.'),
+});
+
 const NormalizeUportalEventSchema = z.object({
   event: z.record(z.unknown()),
 });
 
 const ListTrackedThreadsSchema = z.object({});
 const ListNoticeEvidenceSchema = z.object({});
+const ListTrackedNoticeSendsSchema = z.object({});
 
 async function loadOAuthClient(): Promise<OAuth2Client> {
   if (!fs.existsSync(OAUTH_PATH)) throw new Error(`OAuth keys not found at ${OAUTH_PATH}; authenticate with the primary gmail-mcp server first.`);
@@ -120,7 +139,7 @@ async function main() {
   const gmail = google.gmail({ version: 'v1', auth });
 
   const server = new Server(
-    { name: 'glaciereq-gmail-ops', version: '1.4.0' },
+    { name: 'glaciereq-gmail-ops', version: '1.5.0' },
     { capabilities: { tools: {} } },
   );
 
@@ -142,8 +161,13 @@ async function main() {
         inputSchema: zodToJsonSchema(ScanEmailOperationsSchema),
       },
       {
+        name: 'send_tracked_notice',
+        description: 'Send recipient-bound Gmail notices and persist provider/tracker bindings in an append-only hash-chained ledger. Each recipient gets a separate message. Consented first-party pixels require the tracking policy gate; provider acceptance and readback failure remain distinct evidence states.',
+        inputSchema: zodToJsonSchema(TrackedNoticeSendSchema),
+      },
+      {
         name: 'compile_notice_evidence',
-        description: 'Combine a live Gmail thread, live or supplied UPORTAL access events, and an optional sourced duty/deadline into a provenance-bound Notice Evidence Record. This distinguishes transmission, delivery exceptions, engagement, acknowledgement, human-reading inference, formal service, and duty status instead of collapsing them.',
+        description: 'Combine a live Gmail thread, auto-discovered or supplied UPORTAL access events, and an optional sourced duty/deadline into a provenance-bound Notice Evidence Record. This distinguishes transmission, delivery exceptions, engagement, acknowledgement, human-reading inference, formal service, and duty status instead of collapsing them.',
         inputSchema: zodToJsonSchema(CompileNoticeEvidenceSchema),
       },
       {
@@ -160,6 +184,11 @@ async function main() {
         name: 'list_tracked_email_threads',
         description: 'Read and verify the append-only email tracking ledger, returning the latest persisted state for every tracked Gmail thread.',
         inputSchema: zodToJsonSchema(ListTrackedThreadsSchema),
+      },
+      {
+        name: 'list_tracked_notice_sends',
+        description: 'Read and verify the recipient-bound tracked-send ledger, returning the latest state for each send identity.',
+        inputSchema: zodToJsonSchema(ListTrackedNoticeSendsSchema),
       },
       {
         name: 'list_notice_evidence_records',
@@ -201,6 +230,11 @@ async function main() {
           if (input.openOnly) result = result.filter(item => item.openAction !== null || item.followUpDue);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
+        case 'send_tracked_notice': {
+          const input = TrackedNoticeSendSchema.parse(request.params.arguments);
+          const result = await sendTrackedNotices(gmail as any, input);
+          return { content: [{ type: 'text', text: JSON.stringify({ sends: result }, null, 2) }] };
+        }
         case 'compile_notice_evidence': {
           const input = CompileNoticeEvidenceSchema.parse(request.params.arguments);
           if (input.uportalToken && !input.uportalPublicationId) {
@@ -208,14 +242,36 @@ async function main() {
           }
           const snapshot = await trackEmailThread(gmail, input.threadId, input.followUpAfterHours);
           const rawEvents: Record<string, unknown>[] = [...input.uportalEvents];
-          let liveActivity: { pagesFetched: number; totalReported: number; fetchedItems: number; publicationId?: string; token?: string } | null = null;
+          const bindingMap = new Map<string, { publicationId: string; token?: string; source: 'explicit' | 'tracked-send-ledger'; sendId?: string; recipient?: string }>();
 
           if (input.uportalPublicationId) {
+            const key = `${input.uportalPublicationId}:${input.uportalToken || ''}`;
+            bindingMap.set(key, {
+              publicationId: input.uportalPublicationId,
+              token: input.uportalToken,
+              source: 'explicit',
+            });
+          } else {
+            for (const send of successfulTrackedSendsForThread(input.threadId)) {
+              if (!send.uportal) continue;
+              const key = `${send.uportal.publicationId}:${send.uportal.token}`;
+              bindingMap.set(key, {
+                publicationId: send.uportal.publicationId,
+                token: send.uportal.token,
+                source: 'tracked-send-ledger',
+                sendId: send.sendId,
+                recipient: send.recipient,
+              });
+            }
+          }
+
+          const liveActivity: Array<Record<string, unknown>> = [];
+          for (const binding of bindingMap.values()) {
             const activity = await fetchUportalActivity(
               uportalConfigFromEnv(),
               {
-                publicationId: input.uportalPublicationId,
-                token: input.uportalToken,
+                publicationId: binding.publicationId,
+                token: binding.token,
                 event: input.uportalEvent,
                 from: input.uportalFrom,
                 to: input.uportalTo,
@@ -225,13 +281,12 @@ async function main() {
               },
             );
             rawEvents.push(...activity.items);
-            liveActivity = {
+            liveActivity.push({
+              ...binding,
               pagesFetched: activity.pagesFetched,
               totalReported: activity.totalReported,
               fetchedItems: activity.items.length,
-              publicationId: activity.publicationId,
-              token: activity.token,
-            };
+            });
           }
 
           const observations = rawEvents.map(event => normalizeUportalEvent(event));
@@ -241,6 +296,7 @@ async function main() {
             noticeRecord,
             engagementSource: {
               suppliedRawEvents: input.uportalEvents.length,
+              trackerBindings: [...bindingMap.values()],
               liveActivity,
               normalizedObservations: observations.length,
             },
@@ -281,6 +337,11 @@ async function main() {
         case 'list_tracked_email_threads': {
           ListTrackedThreadsSchema.parse(request.params.arguments || {});
           const result = { ledgerPath: trackingLedgerPath(), trackedThreads: latestTrackedThreads() };
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'list_tracked_notice_sends': {
+          ListTrackedNoticeSendsSchema.parse(request.params.arguments || {});
+          const result = { ledgerPath: trackedSendLedgerPath(), sends: latestTrackedSendRecords() };
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
         case 'list_notice_evidence_records': {

@@ -3,7 +3,11 @@ import os from 'os';
 import path from 'path';
 import { sha256Canonical } from './notice-evidence.js';
 
-export type TrackedSendStatus = 'TRACKER_PUBLISHED' | 'SENT' | 'SEND_FAILED';
+export type TrackedSendStatus =
+  | 'TRACKER_PUBLISHED'
+  | 'SENT'
+  | 'PROVIDER_ACCEPTED_READBACK_FAILED'
+  | 'SEND_FAILED';
 export type TrackedSendMode = 'PROVIDER_STATE' | 'EXPLICIT_RECEIPT_REQUEST' | 'CONSENTED_FIRST_PARTY_PIXEL';
 
 export interface UportalSendBinding {

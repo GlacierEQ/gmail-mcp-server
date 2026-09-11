@@ -196,7 +196,7 @@ export async function publishUportalPixel(
   config: UportalClientConfig,
   input: UportalPixelPublishInput,
   fetchImpl: typeof fetch = fetch,
-): Promise<UPortalPixelPublication> {
+): Promise<UportalPixelPublication> {
   const baseUrl = normalizedBaseUrl(config.baseUrl);
   const authHeader = validatedAuthHeader(config);
   if (!input.publicationId.trim()) throw new Error('UPORTAL publicationId is required');

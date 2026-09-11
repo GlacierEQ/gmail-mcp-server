@@ -74,6 +74,10 @@ if 'UPORTAL_DISABLE_COMMERCIAL_BRIDGE' not in text:
     if needle not in text:
         raise SystemExit('UPORTAL entrypoint contract changed: commercial bridge anchor missing')
     text = text.replace(needle, replacement, 1)
+entry.write_text(text)
+
+# Re-read the persisted entrypoint before applying credential hardening.
+text = entry.read_text()
 
 # Allow the hosting provider to inject a stable first-user token so the Gmail MCP
 # can use it without scraping deployment logs. If absent, preserve upstream random generation.

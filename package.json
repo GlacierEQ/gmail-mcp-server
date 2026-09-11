@@ -5,11 +5,13 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "gmail-mcp": "./dist/index.js"
+    "gmail-mcp": "./dist/index.js",
+    "gmail-ops-mcp": "./dist/ops-index.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:ops": "node dist/ops-index.js",
     "auth": "node dist/index.js auth",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
